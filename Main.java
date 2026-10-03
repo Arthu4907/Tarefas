@@ -2,27 +2,29 @@ package tarefas;
 
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 
+/**
+ * Ponto de entrada da aplicação: interface de linha de comando (menu no console).
+ * Toda regra de negócio fica em {@link GerenciadorTarefas}.
+ */
 public class Main {
-    private static final DateTimeFormatter FORMATO = DateTimeFormatter.ofPattern("dd/MM/yyyy");
-    private static final Scanner in = new Scanner(System.in);
+
+    private static final Path ARQUIVO_DADOS = Path.of("tarefas.csv");
+    private static final Scanner ENTRADA = new Scanner(System.in);
+
     private static GerenciadorTarefas gerenciador;
 
     public static void main(String[] args) {
-        gerenciador = new GerenciadorTarefas(Path.of("tarefas.csv"));
+        gerenciador = new GerenciadorTarefas(ARQUIVO_DADOS);
         System.out.println("=== Sistema de Gestão de Tarefas ===");
 
-        while (true) {
-            System.out.println("""
-
-                    1) Nova tarefa          5) Remover tarefa
-                    2) Listar tarefas       6) Filtrar / pesquisar
-                    3) Mudar status         7) Resumo
-                    4) Editar tarefa        0) Sair""");
+        boolean executando = true;
+        while (executando) {
+            exibirMenu();
             switch (ler("Opção: ")) {
                 case "1" -> novaTarefa();
                 case "2" -> mostrar(gerenciador.listarTodas());
@@ -31,63 +33,103 @@ public class Main {
                 case "5" -> remover();
                 case "6" -> filtrar();
                 case "7" -> resumo();
-                case "0" -> { System.out.println("Até mais!"); return; }
+                case "0" -> {
+                    System.out.println("Até mais!");
+                    executando = false;
+                }
                 default -> System.out.println("Opção inválida.");
             }
         }
     }
 
+    private static void exibirMenu() {
+        System.out.println("""
+
+                1) Nova tarefa          5) Remover tarefa
+                2) Listar tarefas       6) Filtrar / pesquisar
+                3) Mudar status         7) Resumo
+                4) Editar tarefa        0) Sair""");
+    }
+
+    // ---------------------------------------------------------------
+    // Ações do menu
+    // ---------------------------------------------------------------
+
     private static void novaTarefa() {
         String titulo = ler("Título: ");
-        if (titulo.isBlank()) { System.out.println("Título obrigatório."); return; }
+        if (titulo.isBlank()) {
+            System.out.println("Título obrigatório.");
+            return;
+        }
         String descricao = ler("Descrição (opcional): ");
-        Prioridade p = Prioridade.deTexto(ler("Prioridade (1-baixa, 2-média, 3-alta) [2]: "));
+        Prioridade prioridade = Prioridade.deTexto(ler("Prioridade (1-baixa, 2-média, 3-alta) [2]: "));
         LocalDate prazo = lerData("Prazo dd/mm/aaaa (vazio = sem prazo): ");
-        Tarefa t = gerenciador.adicionar(titulo, descricao, p, prazo);
-        System.out.println("Criada: " + t);
+
+        Tarefa tarefa = gerenciador.adicionar(titulo, descricao, prioridade, prazo);
+        System.out.println("Criada: " + tarefa);
     }
 
     private static void mudarStatus() {
         Integer id = lerId();
-        if (id == null) return;
-        String op = ler("Novo status (1-pendente, 2-em andamento, 3-concluída): ");
-        Status s = switch (op) {
-            case "1" -> Status.PENDENTE;
-            case "2" -> Status.EM_ANDAMENTO;
-            case "3" -> Status.CONCLUIDA;
-            default -> null;
-        };
-        if (s == null) { System.out.println("Status inválido."); return; }
-        System.out.println(gerenciador.alterarStatus(id, s) ? "Status atualizado." : "Tarefa não encontrada.");
+        if (id == null) {
+            return;
+        }
+        Status status = Status.deOpcao(ler("Novo status (1-pendente, 2-em andamento, 3-concluída): "));
+        if (status == null) {
+            System.out.println("Status inválido.");
+            return;
+        }
+        System.out.println(gerenciador.alterarStatus(id, status) ? "Status atualizado." : "Tarefa não encontrada.");
     }
 
     private static void editar() {
         Integer id = lerId();
-        if (id == null) return;
-        gerenciador.buscar(id).ifPresentOrElse(t -> {
+        if (id == null) {
+            return;
+        }
+        gerenciador.buscar(id).ifPresentOrElse(tarefa -> {
             System.out.println("Deixe em branco para manter o valor atual.");
-            String titulo = ler("Título [" + t.getTitulo() + "]: ");
-            if (!titulo.isBlank()) t.setTitulo(titulo);
-            String desc = ler("Descrição [" + t.getDescricao() + "]: ");
-            if (!desc.isBlank()) t.setDescricao(desc);
-            String pr = ler("Prioridade (1/2/3) [" + t.getPrioridade() + "]: ");
-            if (!pr.isBlank()) t.setPrioridade(Prioridade.deTexto(pr));
-            String prazoTxt = ler("Prazo dd/mm/aaaa ('-' remove) [" +
-                    (t.getPrazo() == null ? "sem prazo" : t.getPrazo().format(FORMATO)) + "]: ");
-            if (prazoTxt.equals("-")) t.setPrazo(null);
-            else if (!prazoTxt.isBlank()) {
-                LocalDate d = converterData(prazoTxt);
-                if (d != null) t.setPrazo(d);
+
+            String titulo = ler("Título [" + tarefa.getTitulo() + "]: ");
+            if (!titulo.isBlank()) {
+                tarefa.setTitulo(titulo);
             }
+
+            String descricao = ler("Descrição [" + tarefa.getDescricao() + "]: ");
+            if (!descricao.isBlank()) {
+                tarefa.setDescricao(descricao);
+            }
+
+            String prioridade = ler("Prioridade (1/2/3) [" + tarefa.getPrioridade().getRotulo() + "]: ");
+            if (!prioridade.isBlank()) {
+                tarefa.setPrioridade(Prioridade.deTexto(prioridade));
+            }
+
+            String prazoAtual = tarefa.getPrazo() == null ? "sem prazo" : tarefa.getPrazo().format(Tarefa.FORMATO_DATA);
+            String prazo = ler("Prazo dd/mm/aaaa ('-' remove) [" + prazoAtual + "]: ");
+            if (prazo.equals("-")) {
+                tarefa.setPrazo(null);
+            } else if (!prazo.isBlank()) {
+                LocalDate data = converterData(prazo);
+                if (data != null) {
+                    tarefa.setPrazo(data);
+                }
+            }
+
             gerenciador.atualizar();
-            System.out.println("Atualizada: " + t);
+            System.out.println("Atualizada: " + tarefa);
         }, () -> System.out.println("Tarefa não encontrada."));
     }
 
     private static void remover() {
         Integer id = lerId();
-        if (id == null) return;
-        if (!ler("Confirmar remoção? (s/n): ").equalsIgnoreCase("s")) return;
+        if (id == null) {
+            return;
+        }
+        if (!ler("Confirmar remoção? (s/n): ").equalsIgnoreCase("s")) {
+            System.out.println("Remoção cancelada.");
+            return;
+        }
         System.out.println(gerenciador.remover(id) ? "Removida." : "Tarefa não encontrada.");
     }
 
@@ -105,22 +147,32 @@ public class Main {
     }
 
     private static void resumo() {
-        var r = gerenciador.resumo();
-        long total = r.values().stream().mapToLong(Long::longValue).sum();
+        Map<Status, Long> contagem = gerenciador.resumo();
+        long total = contagem.values().stream().mapToLong(Long::longValue).sum();
         System.out.printf("Total: %d | Pendentes: %d | Em andamento: %d | Concluídas: %d | Atrasadas: %d%n",
-                total, r.get(Status.PENDENTE), r.get(Status.EM_ANDAMENTO),
-                r.get(Status.CONCLUIDA), gerenciador.atrasadas().size());
+                total,
+                contagem.get(Status.PENDENTE),
+                contagem.get(Status.EM_ANDAMENTO),
+                contagem.get(Status.CONCLUIDA),
+                gerenciador.atrasadas().size());
     }
 
-    // --- Utilitários de entrada ---
+    // ---------------------------------------------------------------
+    // Utilitários de entrada e saída
+    // ---------------------------------------------------------------
+
     private static void mostrar(List<Tarefa> lista) {
-        if (lista.isEmpty()) { System.out.println("Nenhuma tarefa."); return; }
+        if (lista.isEmpty()) {
+            System.out.println("Nenhuma tarefa encontrada.");
+            return;
+        }
         lista.forEach(System.out::println);
     }
 
-    private static String ler(String msg) {
-        System.out.print(msg);
-        return in.hasNextLine() ? in.nextLine().trim() : "0";
+    /** Lê uma linha do console; se a entrada terminar (EOF), retorna "0" para encerrar o programa. */
+    private static String ler(String mensagem) {
+        System.out.print(mensagem);
+        return ENTRADA.hasNextLine() ? ENTRADA.nextLine().trim() : "0";
     }
 
     private static Integer lerId() {
@@ -132,14 +184,14 @@ public class Main {
         }
     }
 
-    private static LocalDate lerData(String msg) {
-        String txt = ler(msg);
-        return txt.isBlank() ? null : converterData(txt);
+    private static LocalDate lerData(String mensagem) {
+        String texto = ler(mensagem);
+        return texto.isBlank() ? null : converterData(texto);
     }
 
-    private static LocalDate converterData(String txt) {
+    private static LocalDate converterData(String texto) {
         try {
-            return LocalDate.parse(txt, FORMATO);
+            return LocalDate.parse(texto, Tarefa.FORMATO_DATA);
         } catch (DateTimeParseException e) {
             System.out.println("Data inválida, ignorada.");
             return null;

@@ -5,24 +5,47 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Predicate;
 
+/**
+ * Camada de regras de negócio: mantém as tarefas em memória e
+ * sincroniza cada alteração com um arquivo CSV.
+ */
 public class GerenciadorTarefas {
+
+    /** Não concluídas primeiro, depois maior prioridade, depois prazo mais próximo. */
+    private static final Comparator<Tarefa> ORDEM_PADRAO = Comparator
+            .comparing((Tarefa t) -> t.getStatus() == Status.CONCLUIDA)
+            .thenComparing(Tarefa::getPrioridade, Comparator.reverseOrder())
+            .thenComparing(Tarefa::getPrazo, Comparator.nullsLast(Comparator.naturalOrder()));
+
     private final Map<Integer, Tarefa> tarefas = new LinkedHashMap<>();
     private final Path arquivo;
     private int proximoId = 1;
 
+    /**
+     * @param arquivo caminho do CSV; é criado no primeiro salvamento se ainda não existir
+     */
     public GerenciadorTarefas(Path arquivo) {
         this.arquivo = arquivo;
         carregar();
     }
 
+    // ---------------------------------------------------------------
+    // Operações de CRUD
+    // ---------------------------------------------------------------
+
     public Tarefa adicionar(String titulo, String descricao, Prioridade prioridade, LocalDate prazo) {
-        Tarefa t = new Tarefa(proximoId++, titulo, descricao, prioridade, prazo);
-        tarefas.put(t.getId(), t);
+        Tarefa tarefa = new Tarefa(proximoId++, titulo, descricao, prioridade, prazo);
+        tarefas.put(tarefa.getId(), tarefa);
         salvar();
-        return t;
+        return tarefa;
     }
 
     public Optional<Tarefa> buscar(int id) {
@@ -31,71 +54,99 @@ public class GerenciadorTarefas {
 
     public boolean remover(int id) {
         boolean removida = tarefas.remove(id) != null;
-        if (removida) salvar();
+        if (removida) {
+            salvar();
+        }
         return removida;
     }
 
     public boolean alterarStatus(int id, Status status) {
-        Tarefa t = tarefas.get(id);
-        if (t == null) return false;
-        t.setStatus(status);
+        Tarefa tarefa = tarefas.get(id);
+        if (tarefa == null) {
+            return false;
+        }
+        tarefa.setStatus(status);
         salvar();
         return true;
     }
 
-    /** Chame depois de editar uma tarefa obtida por buscar(). */
+    /** Persiste as alterações feitas em uma tarefa obtida por {@link #buscar(int)}. */
     public void atualizar() {
         salvar();
     }
 
-    /** Ordena: não concluídas primeiro, depois maior prioridade, depois prazo mais próximo. */
+    // ---------------------------------------------------------------
+    // Consultas
+    // ---------------------------------------------------------------
+
     public List<Tarefa> listarTodas() {
-        Comparator<Tarefa> ordem = Comparator
-                .comparing((Tarefa t) -> t.getStatus() == Status.CONCLUIDA)
-                .thenComparing(Tarefa::getPrioridade, Comparator.reverseOrder())
-                .thenComparing(Tarefa::getPrazo, Comparator.nullsLast(Comparator.naturalOrder()));
-        return tarefas.values().stream().sorted(ordem).collect(Collectors.toList());
+        return filtrar(t -> true);
     }
 
     public List<Tarefa> filtrarPorStatus(Status status) {
-        return listarTodas().stream().filter(t -> t.getStatus() == status).toList();
+        return filtrar(t -> t.getStatus() == status);
     }
 
-    public List<Tarefa> filtrarPorPrioridade(Prioridade p) {
-        return listarTodas().stream().filter(t -> t.getPrioridade() == p).toList();
+    public List<Tarefa> filtrarPorPrioridade(Prioridade prioridade) {
+        return filtrar(t -> t.getPrioridade() == prioridade);
     }
 
     public List<Tarefa> atrasadas() {
-        return listarTodas().stream().filter(Tarefa::estaAtrasada).toList();
+        return filtrar(Tarefa::estaAtrasada);
     }
 
+    /** Busca o termo no título ou na descrição, sem diferenciar maiúsculas de minúsculas. */
     public List<Tarefa> pesquisar(String termo) {
-        String q = termo.toLowerCase();
-        return listarTodas().stream()
-                .filter(t -> t.getTitulo().toLowerCase().contains(q)
-                        || t.getDescricao().toLowerCase().contains(q))
+        String busca = termo.toLowerCase();
+        return filtrar(t -> t.getTitulo().toLowerCase().contains(busca)
+                || t.getDescricao().toLowerCase().contains(busca));
+    }
+
+    /** Quantidade de tarefas por status (inclui status com zero tarefas). */
+    public Map<Status, Long> resumo() {
+        Map<Status, Long> contagem = new EnumMap<>(Status.class);
+        for (Status s : Status.values()) {
+            contagem.put(s, 0L);
+        }
+        tarefas.values().forEach(t -> contagem.merge(t.getStatus(), 1L, Long::sum));
+        return contagem;
+    }
+
+    private List<Tarefa> filtrar(Predicate<Tarefa> criterio) {
+        return tarefas.values().stream()
+                .filter(criterio)
+                .sorted(ORDEM_PADRAO)
                 .toList();
     }
 
-    public Map<Status, Long> resumo() {
-        Map<Status, Long> r = new EnumMap<>(Status.class);
-        for (Status s : Status.values()) r.put(s, 0L);
-        tarefas.values().forEach(t -> r.merge(t.getStatus(), 1L, Long::sum));
-        return r;
-    }
+    // ---------------------------------------------------------------
+    // Persistência
+    // ---------------------------------------------------------------
 
-    // --- Persistência ---
+    /** Lê o arquivo ignorando linhas inválidas, sem perder as demais tarefas. */
     private void carregar() {
-        if (!Files.exists(arquivo)) return;
+        if (!Files.exists(arquivo)) {
+            return;
+        }
+        List<String> linhas;
         try {
-            for (String linha : Files.readAllLines(arquivo, StandardCharsets.UTF_8)) {
-                if (linha.isBlank()) continue;
-                Tarefa t = Tarefa.deLinha(linha);
-                tarefas.put(t.getId(), t);
-                proximoId = Math.max(proximoId, t.getId() + 1);
-            }
-        } catch (IOException | RuntimeException e) {
+            linhas = Files.readAllLines(arquivo, StandardCharsets.UTF_8);
+        } catch (IOException e) {
             System.err.println("Aviso: não foi possível ler " + arquivo + " (" + e.getMessage() + ")");
+            return;
+        }
+        for (int i = 0; i < linhas.size(); i++) {
+            String linha = linhas.get(i);
+            if (linha.isBlank()) {
+                continue;
+            }
+            try {
+                Tarefa tarefa = Tarefa.deLinha(linha);
+                tarefas.put(tarefa.getId(), tarefa);
+                proximoId = Math.max(proximoId, tarefa.getId() + 1);
+            } catch (RuntimeException e) {
+                System.err.printf("Aviso: linha %d ignorada (%s)%n", i + 1, e.getMessage());
+            }
         }
     }
 

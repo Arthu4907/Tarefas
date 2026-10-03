@@ -1,0 +1,19 @@
+# Compilação
+out/
+bin/
+*.class
+
+# Dados locais gerados pela aplicação
+tarefas.csv
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
